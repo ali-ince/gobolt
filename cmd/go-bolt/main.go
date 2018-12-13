@@ -23,10 +23,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/neo4j-drivers/gobolt"
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/neo4j-drivers/gobolt"
 )
 
 var (
@@ -146,7 +147,7 @@ func init() {
 	flag.StringVar(&uri, "uri", "bolt://localhost:7687", "bolt uri to establish connection against")
 	flag.StringVar(&username, "username", "neo4j", "bolt user name")
 
-	flag.StringVar(&password, "password", "neo4j", "bolt password")
+	flag.StringVar(&password, "password", "password", "bolt password")
 	flag.StringVar(&query, "query", "UNWIND RANGE(1,1000) AS N RETURN N", "cypher query to run")
 	flag.StringVar(&mode, "mode", "write", "access mode for routing mode (read or write)")
 	flag.BoolVar(&debug, "debug", true, "whether to use debug logging")

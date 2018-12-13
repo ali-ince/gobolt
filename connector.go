@@ -86,60 +86,53 @@ type neo4jConnector struct {
 	cResolver *C.struct_BoltAddressResolver
 
 	valueSystem *boltValueSystem
+
+	freeChan chan bool
+	workers  *workerPool
 }
 
 func (conn *neo4jConnector) Close() error {
-	if conn.cInstance != nil {
-		C.BoltConnector_destroy(conn.cInstance)
-		conn.cInstance = nil
-	}
+	var done = make(chan bool, 1)
 
-	if conn.cLogger != nil {
-		unregisterLogging(conn.key)
-		C.BoltLog_destroy(conn.cLogger)
-		conn.cLogger = nil
-	}
+	conn.workers.queueWorkItem(func() {
+		if conn.cInstance != nil {
+			C.BoltConnector_destroy(conn.cInstance)
+			conn.cInstance = nil
+		}
 
-	if conn.cResolver != nil {
-		unregisterResolver(conn.key)
-		C.BoltAddressResolver_destroy(conn.cResolver)
-		conn.cResolver = nil
-	}
+		if conn.cLogger != nil {
+			unregisterLogging(conn.key)
+			C.BoltLog_destroy(conn.cLogger)
+			conn.cLogger = nil
+		}
 
-	if conn.cAddress != nil {
-		C.BoltAddress_destroy(conn.cAddress)
-		conn.cAddress = nil
-	}
+		if conn.cResolver != nil {
+			unregisterResolver(conn.key)
+			C.BoltAddressResolver_destroy(conn.cResolver)
+			conn.cResolver = nil
+		}
 
-	shutdownLibrary()
+		if conn.cAddress != nil {
+			C.BoltAddress_destroy(conn.cAddress)
+			conn.cAddress = nil
+		}
+
+		shutdownLibrary()
+
+		close(conn.freeChan)
+
+		done <- true
+	})
+
+	<-done
+
+	conn.workers.stop()
 
 	return nil
 }
 
 func (conn *neo4jConnector) Acquire(mode AccessMode) (Connection, error) {
-	var cMode uint32 = C.BOLT_ACCESS_MODE_WRITE
-	if mode == AccessModeRead {
-		cMode = C.BOLT_ACCESS_MODE_READ
-	}
-
-	cStatus := C.BoltStatus_create()
-	defer C.BoltStatus_destroy(cStatus)
-	cConnection := C.BoltConnector_acquire(conn.cInstance, C.BoltAccessMode(cMode), cStatus)
-	if cConnection == nil {
-		state := C.BoltStatus_get_state(cStatus)
-		code := C.BoltStatus_get_error(cStatus)
-		codeText := C.GoString(C.BoltError_get_string(code))
-		context := C.GoString(C.BoltStatus_get_error_context(cStatus))
-
-		return nil, newConnectorError(int(state), int(code), codeText, context, "unable to acquire connection from connector")
-	}
-
-	return &neo4jConnection{connector: conn, cInstance: cConnection, valueSystem: conn.valueSystem}, nil
-}
-
-func (conn *neo4jConnector) release(connection *neo4jConnection) error {
-	C.BoltConnector_release(conn.cInstance, connection.cInstance)
-	return nil
+	return newChannelConnection(conn, mode)
 }
 
 // GetAllocationStats returns statistics about seabolt (C) allocations
@@ -233,7 +226,7 @@ func NewConnector(uri *url.URL, authToken map[string]interface{}, config *Config
 	C.BoltConfig_set_log(cConfig, cLogger)
 	C.BoltConfig_set_max_pool_size(cConfig, C.int(config.MaxPoolSize))
 	C.BoltConfig_set_max_connection_life_time(cConfig, C.int(config.MaxConnLifetime/time.Millisecond))
-	C.BoltConfig_set_max_connection_acquisition_time(cConfig, C.int(config.ConnAcquisitionTimeout/time.Millisecond))
+	C.BoltConfig_set_max_connection_acquisition_time(cConfig, C.int(0))
 	C.BoltConfig_set_socket_options(cConfig, cSocketOpts)
 
 	cInstance := C.BoltConnector_create(address, authTokenValue, cConfig)
@@ -246,6 +239,8 @@ func NewConnector(uri *url.URL, authToken map[string]interface{}, config *Config
 		valueSystem: valueSystem,
 		cInstance:   cInstance,
 		cLogger:     cLogger,
+		freeChan:    make(chan bool),
+		workers:     newWorkerPool(100),
 	}
 
 	// do cleanup
